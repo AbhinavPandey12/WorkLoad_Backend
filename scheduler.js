@@ -7,52 +7,47 @@ const startScheduler = () => {
 
     // Run every day at 10:00 AM
     cron.schedule('0 10 * * *', async () => {
-        console.log("Running Inactivity Check...");
+        // console.log("Running Inactivity Check...");
         try {
             const fifteenDaysAgo = new Date();
             fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
             const cutoff = fifteenDaysAgo.toISOString();
 
             // Fetch users with:
-            // 1. role_type != Manager (so ICs/Employees)
-            // 2. last_login < 15 days ago OR null
-            // 3. updated_at < 15 days ago OR null
-            // Supabase doesn't support complex OR filters easily in one query for different fields
-            // So we'll fetch all ICs and filter in JS (assuming dataset isn't massive)
-            // Or better: fetch ICs where updated_at < cutoff AND last_login < cutoff
-
-            // NOTE: We assume 'Manager' is the role to exclude.
+            // 1. Role is NOT Manager
+            // 2. updated_at < 15 days ago
+            
+            // Supabase Select with Join
             const { data: employees, error } = await supabase
                 .from('employees')
-                .select('empid, name, last_login, updated_at, role_type')
-                .neq('role_type', 'Manager');
+                .select(`
+                    empid, 
+                    name, 
+                    updated_at, 
+                    roles ( role_name )
+                `)
+                .lt('updated_at', cutoff); // updated_at is older than cutoff
 
             if (error) throw error;
 
             let count = 0;
             for (const emp of employees) {
-                const lastLogin = emp.last_login ? new Date(emp.last_login) : new Date(0); // If never logged in, treat as old
-                const lastUpdate = emp.updated_at ? new Date(emp.updated_at) : new Date(0); // If never updated, treat as old
+                const roleName = emp.roles ? emp.roles.role_name : "";
 
-                const cutoffDate = new Date(cutoff);
+                // Exclude Managers
+                if (roleName === "Manager") continue;
 
-                // Conditions:
-                // last_login < cutoff AND last_login < cutoff
-                // Inactive on app (>15 days) AND Not updated details (>15 days)
-
-                if (lastLogin < cutoffDate && lastUpdate < cutoffDate) {
-                    // Send Notification
-                    sendNotificationToUser(emp.empid, {
-                        title: "Update Your Details",
-                        message: "It's been 15 days! Please update your Skills and Availability in the Details screen.",
-                        url: "/details",
-                        icon: '/Logo/MainLogo.png',
-                        image: '/Logo/MainLogo.png'
-                    });
-                    count++;
-                }
+                // Send Notification
+                sendNotificationToUser(emp.empid, {
+                    title: "Update Your Details",
+                    message: "It's been 15 days since your last update! Please update your Skills and Availability in the Details screen.",
+                    url: "/details",
+                    icon: '/Logo/Workload.png',
+                    image: '/Logo/Workload.png'
+                });
+                count++;
             }
-            console.log(`Inactivity Check Complete. Sent ${count} notifications.`);
+            // console.log(`Inactivity Check Complete. Sent ${count} notifications.`);
 
         } catch (err) {
             console.error("Scheduler Error:", err);

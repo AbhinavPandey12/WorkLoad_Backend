@@ -4,6 +4,9 @@ import { sendNotificationToUser } from "./notificationController.js";
 // ---------------------------
 // LOGIN USER
 // ---------------------------
+// ---------------------------
+// LOGIN USER
+// ---------------------------
 export const loginUser = async (req, res) => {
   const { email, password } = req.body;
 
@@ -11,10 +14,15 @@ export const loginUser = async (req, res) => {
     return res.status(400).json({ error: "Email and password required" });
 
   try {
-    // Supabase search filter
+    // Normalized Schema: Join roles and clusters
+    // We assume 'roles' table has 'role_name' and 'role_type' and 'clusters' has 'cluster_name'
     const { data: users, error } = await supabase
       .from('employees')
-      .select('*, role_type') // Explicitly request role_type to ensure it's returned
+      .select(`
+        *,
+        roles ( role_name, role_type ),
+        clusters ( cluster_name )
+      `)
       .eq('email', email);
 
     if (error) throw error;
@@ -27,25 +35,37 @@ export const loginUser = async (req, res) => {
     if (user.password !== password)
       return res.status(401).json({ error: "Invalid credentials" });
 
+    // Flatten structure for frontend compatibility
+    const roleName = user.roles ? user.roles.role_name : "Employee";
+    const roleType = user.roles ? user.roles.role_type : "Employee";
+    const clusterName = user.clusters ? user.clusters.cluster_name : null;
+
     const safeUser = {
       empid: user.empid,
+      employee_id: user.employee_id, // New UUID
       name: user.name,
       email: user.email,
-      role: user.role,
-      role_type: user.role_type,
-      ...user // DEBUG: Include ALL fields to see what Supabase is actually returning
+      role: roleName,
+      role_type: roleType, // Correctly mapped from roles table
+      cluster: clusterName,
+      // Pass through other fields if needed, but avoid nested objects if frontend doesn't expect them
+      created_at: user.created_at,
+      updated_at: user.updated_at
     };
 
     // Send Notification
-    // console.log("Sending Login Notification to", user.empid);
-    sendNotificationToUser(user.empid, {
-      title: "New Login Detected",
-      message: `Login detected for ${user.email} at ${new Date().toLocaleTimeString()}`,
-      url: "/"
-    });
+    try {
+      sendNotificationToUser(user.empid, {
+        title: "New Login Detected",
+        message: `Login detected for ${user.email} at ${new Date().toLocaleTimeString()}`,
+        url: "/"
+      });
+    } catch (nErr) {
+      console.error("Notification error:", nErr);
+    }
 
-    // Update last_login
-    await supabase.from('employees').update({ last_login: new Date().toISOString() }).eq('empid', user.empid);
+    // NOTE: last_login column is not in the provided new schema, so skipping update.
+    // If needed, add last_login column to employees table or a separate log table.
 
     res.json({ success: true, user: safeUser });
 
@@ -65,20 +85,35 @@ export const signupUser = async (req, res) => {
     return res.status(400).json({ error: "All fields required" });
 
   try {
+    // 1. Check if email exists
     const { data: existing, error: findError } = await supabase
       .from('employees')
-      .select('*')
+      .select('employee_id')
       .eq('email', email);
 
     if (findError) throw findError;
 
-    if (existing.length > 0)
+    if (existing && existing.length > 0)
       return res.status(409).json({ error: "Email already registered" });
 
+    // 2. Generate EMPID
     const empid = `E${String(Date.now()).slice(-6)}`;
 
-    // Supabase insert
-    const { error: insertError } = await supabase
+    // 3. Get Default Role ID (Employee)
+    const { data: roleData, error: roleError } = await supabase
+      .from('roles')
+      .select('role_id')
+      .eq('role_name', 'Employee') // Assuming 'Employee' role exists
+      .single();
+    
+    // If role fetch fails, we might proceed with null or error. 
+    // Ideally we should handle this. For now logging.
+    let defaultRoleId = null;
+    if (roleData) defaultRoleId = roleData.role_id;
+    else console.warn("Default 'Employee' role not found in DB.");
+
+    // 4. Insert Employee
+    const { data: newEmp, error: insertError } = await supabase
       .from('employees')
       .insert([
         {
@@ -86,18 +121,26 @@ export const signupUser = async (req, res) => {
           name,
           email,
           password,
-          availability: "Occupied",
-          hours_available: "",
-          from_date: "",
-          to_date: "",
-          current_skills: "[]",
-          interests: "[]",
-          previous_projects: "[]",
-          role: "Employee",
+          role_id: defaultRoleId,
+          // cluster_id is null initially
         }
-      ]);
+      ])
+      .select()
+      .single();
 
     if (insertError) throw insertError;
+
+    // 5. Initialize Availability (Default to 'Available' or 'Busy'?)
+    // User schema has availability table.
+    // Let's create a default availability entry.
+    if (newEmp) {
+      await supabase.from('availability').insert([{
+        employee_id: newEmp.employee_id,
+        status: 'Available', // Default
+        hours_available: 8 // Default
+        // from_date/to_date null
+      }]);
+    }
 
     res.json({ success: true, message: "Account created successfully" });
   } catch (err) {

@@ -82,8 +82,8 @@ export const subscribe = async (req, res) => {
 export const sendNotificationToUser = async (empid, payload) => {
     try {
         // Default Icon
-        if (!payload.icon) payload.icon = '/Logo/MainLogo.png';
-        if (!payload.image) payload.image = '/Logo/MainLogo.png'; // Show vivid logo as main image
+        if (!payload.icon) payload.icon = '/Logo/Workload.png';
+        if (!payload.image) payload.image = '/Logo/Workload.png'; // Show vivid logo as main image
 
         // 1. Fetch user subscriptions
         const { data: user, error } = await supabase
@@ -109,7 +109,7 @@ export const sendNotificationToUser = async (empid, payload) => {
                 .catch(err => {
                     if (err.statusCode === 410 || err.statusCode === 404) {
                         // Subscription expired, could remove it here but complex async
-                        console.log(`Subscription expired for ${empid}`);
+                        // console.log(`Subscription expired for ${empid}`);
                     } else {
                         console.error('Push Error:', err);
                     }
@@ -117,7 +117,7 @@ export const sendNotificationToUser = async (empid, payload) => {
         });
 
         await Promise.all(notifications);
-        console.log(`Notification sent to ${empid}`);
+        // console.log(`Notification sent to ${empid}`);
 
     } catch (err) {
         console.error(`Failed to send notification to ${empid}:`, err);
@@ -130,8 +130,8 @@ export const sendNotificationToUser = async (empid, payload) => {
 export const broadcastNotification = async (roleType, payload) => {
     try {
         // Default Icon
-        if (!payload.icon) payload.icon = '/Logo/MainLogo.png';
-        if (!payload.image) payload.image = '/Logo/MainLogo.png';
+        if (!payload.icon) payload.icon = '/Logo/Workload.png';
+        if (!payload.image) payload.image = '/Logo/Workload.png';
 
         // Fetch all users with role_type (case insensitive ideally, or just exact)
         // Assuming role_type is what distinguishes IC vs Manager. 
@@ -169,7 +169,7 @@ export const broadcastNotification = async (roleType, payload) => {
         });
 
         await Promise.all(promises);
-        console.log(`Broadcast sent to ${employees.length} employees`);
+        // console.log(`Broadcast sent to ${employees.length} employees`);
 
     } catch (err) {
         console.error("Broadcast error:", err);
