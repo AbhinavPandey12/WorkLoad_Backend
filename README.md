@@ -1,4 +1,4 @@
-![WorkLoad Logo](../workload_frontend/public/Logo/Workload.png)
+![WorkLoad Logo](./public/pics/Workload.png)
 
 # WorkLoad - Backend
 
@@ -9,7 +9,7 @@ The WorkLoad Backend serves as the robust foundation for the Employee Availabili
 - **Database**: [Supabase](https://supabase.com/) (PostgreSQL)
 - **Supabase Project URL**: [https://kpipsgtyriqbvzlyvfec.supabase.co](https://kpipsgtyriqbvzlyvfec.supabase.co)
 - **Supabase Dashboard URL**: [https://supabase.com/dashboard/project/kpipsgtyriqbvzlyvfec/editor/17633](https://supabase.com/dashboard/project/kpipsgtyriqbvzlyvfec/editor/17633)
-![Supabase Schema](../workload_frontend/public/Logo/supabase_schema.png)
+![Supabase Schema](./public/pics/Supabase_schema.png)
 - **Schema**: Fully normalized relational schema comprising tables for:
   - `employees`: Core user data and credentials.
   - `roles`: RBAC definitions (`role_name`, `role_type`).
