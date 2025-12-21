@@ -61,7 +61,7 @@ app.listen(PORT, () =>
 );
 
 // Start Scheduler
-import startScheduler from './scheduler.js';
+import startScheduler from './scripts/scheduler.js';
 startScheduler();
 
 // TEST ROUTE TO CHECK SHEETDB CONNECTION

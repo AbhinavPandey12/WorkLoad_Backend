@@ -1,6 +1,6 @@
 import cron from 'node-cron';
-import supabase from './db/supabaseClient.js';
-import { sendNotificationToUser } from './controllers/notificationController.js';
+import supabase from '../db/supabaseClient.js';
+import { sendNotificationToUser } from '../controllers/notificationController.js';
 
 const startScheduler = () => {
     console.log("Starting Inactivity Scheduler...");

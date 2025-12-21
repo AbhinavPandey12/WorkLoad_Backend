@@ -53,8 +53,8 @@ workload_backend/
 ├── controllers/      # Logic for API requests (Auth, Employee, Notification)
 ├── db/               # Database connection configurations
 ├── routes/           # API route definitions
+├── scripts/          # Cron jobs and helper scripts (scheduler.js, keys.txt, generate_keys.js)
 ├── index.js          # Entry point of the application
-├── scheduler.js      # Cron job definitions for automated tasks
 ├── .env              # Environment variables (not committed)
 └── package.json      # Dependencies and scripts
 ```
