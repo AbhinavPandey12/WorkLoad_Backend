@@ -1,0 +1,9 @@
+﻿[dotenv@17.2.3] injecting env (5) from .env -- tip: ΓÜÖ∩╕Å  load multiple .env files with { path: ['.env.local', '.env'] }
+--- Step 1: Fetch Employee (No Join) ---
+Employee found: Manager One Role ID: 80847d41-3ee6-43ea-ae8e-14c8c1cf8242
+
+--- Step 2: Fetch Role (No Join) ---
+Role found: Engagement Manager Type: Manager
+
+--- Step 3: Fetch Clusters (No Join) ---
+Clusters found: 0

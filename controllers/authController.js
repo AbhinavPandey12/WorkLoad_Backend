@@ -14,13 +14,10 @@ export const loginUser = async (req, res) => {
     return res.status(400).json({ error: "Email and password required" });
 
   try {
-    // 1. Fetch user and role
+    // 1. Fetch user (No join)
     const { data: users, error: userError } = await supabase
       .from('employees')
-      .select(`
-        *,
-        roles ( role_name, role_type )
-      `)
+      .select('*')
       .eq('email', email);
     
     if (userError) {
@@ -36,29 +33,47 @@ export const loginUser = async (req, res) => {
     if (user.password !== password)
       return res.status(401).json({ error: "Invalid credentials" });
 
-    // 2. Fetch clusters separately to avoid complex join issues
+    // 2. Fetch role manually (No join)
+    let roleName = "Employee";
+    let roleType = "IC";
+    if (user.role_id) {
+      try {
+        const { data: roleData, error: roleError } = await supabase
+          .from('roles')
+          .select('role_name, role_type')
+          .eq('id', user.role_id)
+          .single();
+        if (!roleError && roleData) {
+          roleName = roleData.role_name;
+          roleType = roleData.role_type;
+        }
+      } catch (rErr) {
+        console.warn("Role fetch error:", rErr.message);
+      }
+    }
+
+    // 3. Fetch clusters manually (No join)
     let clusters = [];
     try {
       const { data: ecData, error: ecError } = await supabase
         .from('employee_clusters')
-        .select(`
-          cluster_id,
-          clusters ( cluster_name )
-        `)
+        .select('cluster_id')
         .eq('employee_id', user.employee_id);
       
-      if (!ecError && ecData) {
-        clusters = ecData.map(ec => ec.clusters?.cluster_name).filter(Boolean);
-      } else if (ecError) {
-        console.warn("Cluster fetch warning (skipping clusters):", ecError.message);
+      if (!ecError && ecData && ecData.length > 0) {
+        const clusterIds = ecData.map(ec => ec.cluster_id);
+        const { data: cData, error: cError } = await supabase
+          .from('clusters')
+          .select('cluster_name')
+          .in('id', clusterIds);
+        
+        if (!cError && cData) {
+          clusters = cData.map(c => c.cluster_name);
+        }
       }
     } catch (cErr) {
-      console.warn("Cluster fetch error (skipping clusters):", cErr.message);
+      console.warn("Cluster fetch error:", cErr.message);
     }
-
-    // Flatten structure for frontend compatibility
-    const roleName = user.roles ? user.roles.role_name : "Employee";
-    const roleType = user.roles ? user.roles.role_type : "IC";
 
     const safeUser = {
       employee_id: user.employee_id, // Integer PK

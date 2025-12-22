@@ -301,33 +301,44 @@ export const updateEmployee = async (req, res) => {
        }
     }
 
-    // Return the updated full object
-    const { data: freshData } = await supabase.from('employees')
-      .select(`
-        *,
-        roles ( role_name, role_type ),
-        employee_clusters ( clusters ( cluster_name ) ),
-        employee_skills ( skills ( skill_name ) ),
-        project_members ( member_role, projects ( project_name ) ),
-        availability_details ( availability, hours_available, from_date, to_date ),
-        employee_stars ( stars, created_at ),
-        employee_working_days ( working_days ( day_name ) )
-      `)
+    // Return the updated full object (Sequential Fetch)
+    const { data: freshEmp } = await supabase.from('employees')
+      .select('*, availability_details(availability, hours_available, from_date, to_date)')
       .eq('employee_id', employee_id)
-      .order('created_at', { foreignTable: 'employee_stars', ascending: false })
       .single();
+
+    if (freshEmp) {
+      // Fetch related data manually
+      const [ec, es, stars, ewd, pm, roleData] = await Promise.all([
+         supabase.from('employee_clusters').select('clusters(cluster_name)').eq('employee_id', employee_id),
+         supabase.from('employee_skills').select('skills(skill_name)').eq('employee_id', employee_id),
+         supabase.from('employee_stars').select('stars').eq('employee_id', employee_id).order('created_at', { ascending: false }),
+         supabase.from('employee_working_days').select('working_days(day_name)').eq('employee_id', employee_id),
+         supabase.from('project_members').select('member_role, projects(project_name)').eq('employee_id', employee_id),
+         freshEmp.role_id ? supabase.from('roles').select('role_name, role_type').eq('id', freshEmp.role_id).single() : { data: null }
+      ]);
+
+      const freshData = {
+          ...freshEmp,
+          employee_clusters: ec.data || [],
+          employee_skills: es.data || [],
+          employee_stars: stars.data || [],
+          employee_working_days: ewd.data || [],
+          project_members: pm.data || [],
+          roles: roleData.data || null
+      };
     
-    if (freshData) {
-        const transformed = transformEmployee(freshData);
-        res.json({ success: true, message: "Employee updated", data: transformed });
-        
-        try {
-            sendNotificationToUser(employee_id, {
-               title: "Profile Updated",
-               message: "Your profile details have been successfully updated.",
-               url: "/profile"
-            });
-        } catch(e) { console.error("Notification Error:", e); }
+      const transformed = transformEmployee(freshData);
+      res.json({ success: true, message: "Employee updated", data: transformed });
+      
+      try {
+          sendNotificationToUser(employee_id, {
+             title: "Profile Updated",
+             message: "Your profile details have been successfully updated.",
+             url: "/profile"
+          });
+      } catch(e) { console.error("Notification Error:", e); }
+
     } else {
         res.status(500).json({ error: "Failed to reload data" });
     }
@@ -362,14 +373,42 @@ export const updateEmployeeStars = async (req, res) => {
 // GET DASHBOARD METRICS
 export const getDashboardMetrics = async (req, res) => {
   try {
+    // 1. Fetch employees
     const { data: employees, error } = await supabase
       .from('employees')
       .select(`
         *,
-        roles ( role_name ),
-        employee_clusters ( clusters ( cluster_name ) ),
         availability_details ( availability, hours_available )
       `);
+
+    if (error) throw error;
+    if (!employees) return res.json({});
+
+    const empIds = employees.map(e => e.employee_id);
+
+    // 2. Fetch Roles
+    const roleIds = [...new Set(employees.map(e => e.role_id).filter(Boolean))];
+    const { data: allRoles } = await supabase.from('roles').select('id, role_name').in('id', roleIds);
+
+    // 3. Fetch Clusters
+    const { data: allClusters } = await supabase
+       .from('employee_clusters')
+       .select('employee_id, clusters(cluster_name)')
+       .in('employee_id', empIds);
+
+    // Merge in memory
+    const enrichedEmps = employees.map(emp => {
+       const role = allRoles?.find(r => r.id === emp.role_id);
+       const clusters = allClusters?.filter(c => c.employee_id === emp.employee_id);
+       return {
+          ...emp,
+          roles: role,
+          employee_clusters: clusters
+       };
+    });
+    
+    // Use enrichedEmps below instead of employees
+    const empsToProcess = enrichedEmps;
 
     if (error) throw error;
 
@@ -383,7 +422,7 @@ export const getDashboardMetrics = async (req, res) => {
       availableEmployeeCount: 0
     };
 
-    employees.forEach(emp => {
+    empsToProcess.forEach(emp => {
        const r = emp.roles?.role_name;
        if (r) metrics.roles[r] = (metrics.roles[r] || 0) + 1;
        

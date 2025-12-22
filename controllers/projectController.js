@@ -4,26 +4,45 @@ import { broadcastNotification } from './notificationController.js';
 // Get all projects with Manager Name and Members
 export const getProjects = async (req, res) => {
     try {
+        // 1. Fetch raw projects
         const { data: projects, error } = await supabase
             .from('projects')
-            .select(`
-                *,
-                manager:employees!projects_manager_id_fkey ( name ),
-                project_members ( employee_id, member_role, employees ( name ) )
-            `)
+            .select('*')
             .order('updated_at', { ascending: false });
 
         if (error) throw error;
+        if (!projects || projects.length === 0) return res.status(200).json([]);
 
-        const enrichedData = projects.map(p => ({
-            ...p,
-            manager_name: p.manager?.name || "Unknown",
-            members: p.project_members?.map(m => ({
-                employee_id: m.employee_id,
-                name: m.employees?.name,
-                role: m.member_role
-            })) || []
-        }));
+        const projectIds = projects.map(p => p.project_id);
+        const managerIds = [...new Set(projects.map(p => p.manager_id).filter(Boolean))];
+
+        // 2. Fetch managers
+        const { data: managers } = await supabase
+            .from('employees')
+            .select('employee_id, name')
+            .in('employee_id', managerIds);
+
+        // 3. Fetch members
+        const { data: members } = await supabase
+            .from('project_members')
+            .select('project_id, employee_id, member_role, employees(name)')
+            .in('project_id', projectIds);
+
+        // 4. Enrich data
+        const enrichedData = projects.map(p => {
+            const manager = managers?.find(m => m.employee_id === p.manager_id);
+            const pMembers = members?.filter(m => m.project_id === p.project_id) || [];
+            
+            return {
+                ...p,
+                manager_name: manager?.name || "Unknown",
+                members: pMembers.map(m => ({
+                    employee_id: m.employee_id,
+                    name: m.employees?.name || "Unknown",
+                    role: m.member_role
+                }))
+            };
+        });
 
         res.status(200).json(enrichedData);
     } catch (error) {
