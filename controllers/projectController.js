@@ -1,40 +1,33 @@
 import supabase from '../db/supabaseClient.js';
 import { broadcastNotification } from './notificationController.js';
 
-// Get all projects
-// Get all projects with Creator Name manually mapped
+// Get all projects with Manager Name and Members
 export const getProjects = async (req, res) => {
     try {
         const { data: projects, error } = await supabase
             .from('projects')
-            .select('*')
-            .order('id', { ascending: false });
+            .select(`
+                *,
+                manager:employees!projects_manager_id_fkey ( name ),
+                project_members ( employee_id, member_role, employees ( name ) )
+            `)
+            .order('updated_at', { ascending: false });
 
         if (error) throw error;
 
-        // Manual Join: Fetch creator names for these empids
-        // This avoids Foreign Key errors if constraints aren't set up
-        const empids = [...new Set(projects.map(p => p.empid).filter(id => id))];
-
-        let creatorMap = {};
-        if (empids.length > 0) {
-            const { data: employees, error: empError } = await supabase
-                .from('employees')
-                .select('empid, name')
-                .in('empid', empids);
-
-            if (!empError && employees) {
-                employees.forEach(e => creatorMap[e.empid] = e.name);
-            }
-        }
-
         const enrichedData = projects.map(p => ({
             ...p,
-            creator_name: creatorMap[p.empid] || "Unknown"
+            manager_name: p.manager?.name || "Unknown",
+            members: p.project_members?.map(m => ({
+                employee_id: m.employee_id,
+                name: m.employees?.name,
+                role: m.member_role
+            })) || []
         }));
 
         res.status(200).json(enrichedData);
     } catch (error) {
+        console.error("Get projects error:", error);
         res.status(500).json({ error: error.message });
     }
 };
@@ -43,58 +36,69 @@ export const getProjects = async (req, res) => {
 export const createProject = async (req, res) => {
     try {
         let {
-            empid,
+            manager_id,
             project_name,
-            leader_name,
             required_skills,
+            start_date,
             end_date,
             status,
             description,
-            poc1,
-            poc2,
-            poc3
+            employee1_id,
+            employee2_id,
+            poc1_id,
+            poc2_id,
+            poc3_id
         } = req.body;
 
-
-
-
-
-        // Ensure required_skills is an array (Supabase handles JSONB automatically if passed as array/object)
-        let skillsArray = [];
-        if (Array.isArray(required_skills)) {
-            skillsArray = required_skills;
-        } else if (typeof required_skills === 'string') {
-            skillsArray = required_skills.split(',').map(s => s.trim()).filter(s => s);
-        }
-
-        const { data, error } = await supabase
+        // 1. Insert Project
+        const { data: project, error: pError } = await supabase
             .from('projects')
             .insert([
                 {
-                    empid: empid || 0, // Default to 0 if not provided
+                    manager_id,
                     project_name,
-                    leader_name,
-                    required_skills: skillsArray,
-                    end_date,
-                    status,
+                    status: status || 'Open',
                     description,
-                    poc1,
-                    poc2,
-                    poc3
+                    start_date,
+                    end_date
                 }
             ])
-            .select();
+            .select()
+            .single();
 
-        if (error) throw error;
+        if (pError) throw pError;
 
-        res.status(201).json(data[0]);
+        // 2. Insert Members (Exactly 2 Employees as per rule + optional POCs)
+        const members = [];
+        if (employee1_id) members.push({ project_id: project.project_id, employee_id: employee1_id, member_role: 'Employee' });
+        if (employee2_id) members.push({ project_id: project.project_id, employee_id: employee2_id, member_role: 'Employee' });
+        
+        // Use POC ids if provided
+        if (poc1_id) members.push({ project_id: project.project_id, employee_id: poc1_id, member_role: 'POC1' });
+        if (poc2_id) members.push({ project_id: project.project_id, employee_id: poc2_id, member_role: 'POC2' });
+        if (poc3_id) members.push({ project_id: project.project_id, employee_id: poc3_id, member_role: 'POC3' });
 
-        // Broadcast Notification to all ICs (Non-Managers)
-        // We assume "IC" or empty role_type implies non-manager.
-        // broadcastNotification will handle fetching appropriate users.
+        if (members.length > 0) {
+            const { error: mError } = await supabase.from('project_members').insert(members);
+            if (mError) throw mError;
+        }
+
+        // 3. Handle Required Skills
+        if (Array.isArray(required_skills)) {
+            for (const sName of required_skills) {
+                const { data: sData } = await supabase.from('skills').select('id').eq('skill_name', sName).single();
+                if (sData) {
+                    await supabase.from('project_required_skills').insert([{ project_id: project.project_id, skill_id: sData.id }]);
+                }
+            }
+        }
+
+        res.status(201).json(project);
+
+        // Broadcast
         broadcastNotification("IC", {
             title: "New Activity Available",
-            message: `A new activity "${project_name}" has been posted. Check it out!`,
+            message: `A new activity "${project_name}" has been posted.`,
             url: "/inline-activities"
         });
     } catch (error) {
@@ -111,8 +115,8 @@ export const updateProjectStatus = async (req, res) => {
 
         const { data, error } = await supabase
             .from('projects')
-            .update({ status })
-            .eq('id', id)
+            .update({ status, updated_at: new Date().toISOString() })
+            .eq('project_id', id)
             .select();
 
         if (error) throw error;
@@ -129,59 +133,43 @@ export const updateProject = async (req, res) => {
     try {
         const { id } = req.params;
         let {
-            user_empid,
+            manager_id,
             project_name,
-            leader_name,
             required_skills,
+            start_date,
             end_date,
             status,
-            description,
-            poc1,
-            poc2,
-            poc3
+            description
         } = req.body;
-
-        // Verify Ownership
-        const { data: existing } = await supabase
-            .from('projects')
-            .select('empid')
-            .eq('id', id)
-            .single();
-
-        if (existing) {
-            // If user_empid is provided, verify it matches
-            if (user_empid && String(existing.empid) !== String(user_empid)) {
-                return res.status(403).json({ error: "Unauthorized: Only the creator can edit this activity." });
-            }
-        }
-
-        // Ensure required_skills is an array
-        let skillsArray = [];
-        if (Array.isArray(required_skills)) {
-            skillsArray = required_skills;
-        } else if (typeof required_skills === 'string') {
-            skillsArray = required_skills.split(',').map(s => s.trim()).filter(s => s);
-        }
 
         const updatePayload = {
             project_name,
-            leader_name,
-            required_skills: skillsArray,
+            manager_id,
+            start_date,
             end_date,
             status,
             description,
-            poc1,
-            poc2,
-            poc3
+            updated_at: new Date().toISOString()
         }
 
         const { data, error } = await supabase
             .from('projects')
             .update(updatePayload)
-            .eq('id', id)
+            .eq('project_id', id)
             .select();
 
         if (error) throw error;
+
+        // Skills update (wipe and replace)
+        if (Array.isArray(required_skills)) {
+            await supabase.from('project_required_skills').delete().eq('project_id', id);
+            for (const sName of required_skills) {
+                const { data: sData } = await supabase.from('skills').select('id').eq('skill_name', sName).single();
+                if (sData) {
+                    await supabase.from('project_required_skills').insert([{ project_id: id, skill_id: sData.id }]);
+                }
+            }
+        }
 
         res.status(200).json(data[0]);
     } catch (error) {
@@ -194,25 +182,12 @@ export const updateProject = async (req, res) => {
 export const deleteProject = async (req, res) => {
     try {
         const { id } = req.params;
-        const { user_empid } = req.body;
-
-        // Verify Ownership
-        const { data: existing } = await supabase
-            .from('projects')
-            .select('empid')
-            .eq('id', id)
-            .single();
-
-        if (existing) {
-            if (user_empid && String(existing.empid) !== String(user_empid)) {
-                return res.status(403).json({ error: "Unauthorized: Only the creator can delete this activity." });
-            }
-        }
-
+        
+        // Cascading deletes should be handled by DB constraints (project_members, project_required_skills)
         const { error } = await supabase
             .from('projects')
             .delete()
-            .eq('id', id);
+            .eq('project_id', id);
 
         if (error) throw error;
 

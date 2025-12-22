@@ -21,7 +21,7 @@ const startScheduler = () => {
             const { data: employees, error } = await supabase
                 .from('employees')
                 .select(`
-                    empid, 
+                    employee_id, 
                     name, 
                     updated_at, 
                     roles ( role_name )
@@ -38,7 +38,7 @@ const startScheduler = () => {
                 if (roleName === "Manager") continue;
 
                 // Send Notification
-                sendNotificationToUser(emp.empid, {
+                sendNotificationToUser(emp.employee_id, {
                     title: "Update Your Details",
                     message: "It's been 15 days since your last update! Please update your Skills and Availability in the Details screen.",
                     url: "/details",

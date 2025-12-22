@@ -24,48 +24,35 @@ if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
 // SUBSCRIBE ENDPOINT
 // ----------------------
 export const subscribe = async (req, res) => {
-    const { subscription, empid } = req.body;
+    const { subscription, employee_id } = req.body;
 
-    if (!subscription || !empid) {
-        return res.status(400).json({ error: "Subscription and empid required" });
+    if (!subscription || !employee_id) {
+        return res.status(400).json({ error: "Subscription and employee_id required" });
     }
 
     try {
-        // 1. Get current subscriptions for user
-        const { data: user, error: fetchError } = await supabase
-            .from('employees')
-            .select('push_subscriptions')
-            .eq('empid', empid)
-            .single();
+        // 1. Check if subscription already exists for this user
+        const { data: existing, error: fetchError } = await supabase
+            .from('push_notifications')
+            .select('id')
+            .eq('employee_id', employee_id)
+            .eq('endpoint', subscription.endpoint)
+            .maybeSingle();
 
         if (fetchError) throw fetchError;
 
-        let subscriptions = [];
-        if (user && user.push_subscriptions) {
-            // Handle JSONB or Text
-            if (typeof user.push_subscriptions === 'string') {
-                try {
-                    subscriptions = JSON.parse(user.push_subscriptions);
-                } catch (e) {
-                    subscriptions = [];
-                }
-            } else if (Array.isArray(user.push_subscriptions)) {
-                subscriptions = user.push_subscriptions;
-            }
-        }
+        if (!existing) {
+            // 2. Insert new record
+            const { error: insertError } = await supabase
+                .from('push_notifications')
+                .insert([{
+                    employee_id,
+                    endpoint: subscription.endpoint,
+                    p256dh: subscription.keys?.p256dh,
+                    auth: subscription.keys?.auth
+                }]);
 
-        // 2. Add new subscription if not exists (check endpoint)
-        const exists = subscriptions.some(s => s.endpoint === subscription.endpoint);
-        if (!exists) {
-            subscriptions.push(subscription);
-
-            // 3. Update DB
-            const { error: updateError } = await supabase
-                .from('employees')
-                .update({ push_subscriptions: subscriptions }) // Supabase handles array->jsonb
-                .eq('empid', empid);
-
-            if (updateError) throw updateError;
+            if (insertError) throw insertError;
         }
 
         res.status(201).json({ success: true, message: "Subscribed successfully" });
@@ -79,37 +66,34 @@ export const subscribe = async (req, res) => {
 // ----------------------
 // SEND NOTIFICATION HELPER (Internal)
 // ----------------------
-export const sendNotificationToUser = async (empid, payload) => {
+export const sendNotificationToUser = async (employee_id, payload) => {
     try {
         // Default Icon
         if (!payload.icon) payload.icon = '/Logo/Workload.png';
-        if (!payload.image) payload.image = '/Logo/Workload.png'; // Show vivid logo as main image
+        if (!payload.image) payload.image = '/Logo/Workload.png';
 
-        // 1. Fetch user subscriptions
-        const { data: user, error } = await supabase
-            .from('employees')
-            .select('push_subscriptions')
-            .eq('empid', empid)
-            .single();
+        // 1. Fetch user subscriptions from separate table
+        const { data: subs, error } = await supabase
+            .from('push_notifications')
+            .select('endpoint, p256dh, auth')
+            .eq('employee_id', employee_id);
 
-        if (error || !user || !user.push_subscriptions) return;
-
-        let subscriptions = [];
-        if (typeof user.push_subscriptions === 'string') {
-            try { subscriptions = JSON.parse(user.push_subscriptions); } catch (e) { }
-        } else {
-            subscriptions = user.push_subscriptions;
-        }
-
-        if (!Array.isArray(subscriptions) || subscriptions.length === 0) return;
+        if (error || !subs || subs.length === 0) return;
 
         // 2. Send to all subscriptions
-        const notifications = subscriptions.map(sub => {
-            return webpush.sendNotification(sub, JSON.stringify(payload))
+        const notifications = subs.map(subRecord => {
+            const pushSubscription = {
+                endpoint: subRecord.endpoint,
+                keys: {
+                    p256dh: subRecord.p256dh,
+                    auth: subRecord.auth
+                }
+            };
+            return webpush.sendNotification(pushSubscription, JSON.stringify(payload))
                 .catch(err => {
                     if (err.statusCode === 410 || err.statusCode === 404) {
                         // Subscription expired, could remove it here but complex async
-                        // console.log(`Subscription expired for ${empid}`);
+                        // console.log(`Subscription expired for ${employee_id}`);
                     } else {
                         console.error('Push Error:', err);
                     }
@@ -117,10 +101,10 @@ export const sendNotificationToUser = async (empid, payload) => {
         });
 
         await Promise.all(notifications);
-        // console.log(`Notification sent to ${empid}`);
+        // console.log(`Notification sent to ${employee_id}`);
 
     } catch (err) {
-        console.error(`Failed to send notification to ${empid}:`, err);
+        console.error(`Failed to send notification to ${employee_id}:`, err);
     }
 };
 
@@ -133,39 +117,34 @@ export const broadcastNotification = async (roleType, payload) => {
         if (!payload.icon) payload.icon = '/Logo/Workload.png';
         if (!payload.image) payload.image = '/Logo/Workload.png';
 
-        // Fetch all users with role_type (case insensitive ideally, or just exact)
-        // Assuming role_type is what distinguishes IC vs Manager. 
-        // Or check `role` field.
-        // User request: "all the IC should receive a notification"
-
-        // Let's filter by role_type != 'Manager' or role_type = 'IC'? 
-        // Let's assume anyone NOT a manager is an IC for safety, or check logic.
-        // Better: Fetch all, filter in memory or DB.
-
-        let query = supabase.from('employees').select('empid, push_subscriptions, role_type');
-
+        // 1. Fetch all employees to satisfy role filter
+        let query = supabase.from('employees').select('employee_id, role_type');
         if (roleType) {
-            // This might need adjustment based on exact role strings
-            query = query.neq('role_type', 'Manager'); // Broadcast to non-managers (ICs)
+            query = query.neq('role_type', 'Manager');
         }
+        const { data: employees, error: empError } = await query;
+        if (empError) throw empError;
 
-        const { data: employees, error } = await query;
+        const employeeIds = employees.map(e => e.employee_id);
 
-        if (error) throw error;
+        // 2. Fetch all subscriptions for these employees
+        const { data: allSubs, error: subError } = await supabase
+            .from('push_notifications')
+            .select('endpoint, p256dh, auth, employee_id')
+            .in('employee_id', employeeIds);
 
-        const promises = employees.map(emp => {
-            // Reuse logic or just manual send
-            if (!emp.push_subscriptions) return Promise.resolve();
+        if (subError) throw subError;
 
-            let subs = emp.push_subscriptions;
-            if (typeof subs === 'string') {
-                try { subs = JSON.parse(subs); } catch { return Promise.resolve(); }
-            }
-            if (!Array.isArray(subs)) return Promise.resolve();
-
-            return Promise.all(subs.map(sub =>
-                webpush.sendNotification(sub, JSON.stringify(payload)).catch(e => console.error(e.message))
-            ));
+        const promises = (allSubs || []).map(subRecord => {
+            const pushSubscription = {
+                endpoint: subRecord.endpoint,
+                keys: {
+                    p256dh: subRecord.p256dh,
+                    auth: subRecord.auth
+                }
+            };
+            return webpush.sendNotification(pushSubscription, JSON.stringify(payload))
+                .catch(e => console.error(`Broadcast item error for emp ${subRecord.employee_id}:`, e.message));
         });
 
         await Promise.all(promises);

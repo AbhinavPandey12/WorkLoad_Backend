@@ -14,18 +14,20 @@ export const loginUser = async (req, res) => {
     return res.status(400).json({ error: "Email and password required" });
 
   try {
-    // Normalized Schema: Join roles and clusters
-    // We assume 'roles' table has 'role_name' and 'role_type' and 'clusters' has 'cluster_name'
+    // JOIN roles and clusters (via employee_clusters)
     const { data: users, error } = await supabase
       .from('employees')
       .select(`
         *,
         roles ( role_name, role_type ),
-        clusters ( cluster_name )
+        employee_clusters ( clusters ( cluster_name ) )
       `)
       .eq('email', email);
 
-    if (error) throw error;
+    if (error) {
+      console.error("Supabase Query Error during Login:", error);
+      throw error;
+    }
 
     if (!users || users.length === 0)
       return res.status(401).json({ error: "Invalid credentials" });
@@ -37,25 +39,26 @@ export const loginUser = async (req, res) => {
 
     // Flatten structure for frontend compatibility
     const roleName = user.roles ? user.roles.role_name : "Employee";
-    const roleType = user.roles ? user.roles.role_type : "Employee";
-    const clusterName = user.clusters ? user.clusters.cluster_name : null;
+    const roleType = user.roles ? user.roles.role_type : "IC";
+    
+    // Multiple clusters
+    const clusters = user.employee_clusters ? user.employee_clusters.map(ec => ec.clusters?.cluster_name).filter(Boolean) : [];
 
     const safeUser = {
-      empid: user.empid,
-      employee_id: user.employee_id, // New UUID
+      employee_id: user.employee_id, // Integer PK
       name: user.name,
       email: user.email,
       role: roleName,
-      role_type: roleType, // Correctly mapped from roles table
-      cluster: clusterName,
-      // Pass through other fields if needed, but avoid nested objects if frontend doesn't expect them
+      role_type: roleType,
+      clusters: clusters,
+      availability: user.availability,
       created_at: user.created_at,
       updated_at: user.updated_at
     };
 
     // Send Notification
     try {
-      sendNotificationToUser(user.empid, {
+      sendNotificationToUser(user.employee_id, {
         title: "New Login Detected",
         message: `Login detected for ${user.email} at ${new Date().toLocaleTimeString()}`,
         url: "/"
@@ -71,7 +74,7 @@ export const loginUser = async (req, res) => {
 
   } catch (err) {
     console.error("Login error →", err);
-    res.status(500).json({ error: "Supabase login error" });
+    res.status(500).json({ error: "Supabase login error", details: err.message, hint: err.hint });
   }
 };
 
@@ -83,6 +86,10 @@ export const signupUser = async (req, res) => {
 
   if (!email || !password || !name)
     return res.status(400).json({ error: "All fields required" });
+
+  if (!email.endsWith('@workload.com')) {
+    return res.status(400).json({ error: "Email must end with @workload.com" });
+  }
 
   try {
     // 1. Check if email exists
@@ -96,33 +103,39 @@ export const signupUser = async (req, res) => {
     if (existing && existing.length > 0)
       return res.status(409).json({ error: "Email already registered" });
 
-    // 2. Generate EMPID
-    const empid = `E${String(Date.now()).slice(-6)}`;
+    // 2. Generate 6-digit integer employee_id (Unique)
+    let employee_id;
+    let isUnique = false;
+    while (!isUnique) {
+      employee_id = Math.floor(100000 + Math.random() * 900000);
+      const { data: check } = await supabase.from('employees').select('employee_id').eq('employee_id', employee_id).single();
+      if (!check) isUnique = true;
+    }
 
-    // 3. Get Default Role ID (Employee)
+    // 3. Get Default Role ID (IC type Developer)
     const { data: roleData, error: roleError } = await supabase
       .from('roles')
-      .select('role_id')
-      .eq('role_name', 'Employee') // Assuming 'Employee' role exists
+      .select('id')
+      .eq('role_name', 'Software Developer') 
       .single();
     
-    // If role fetch fails, we might proceed with null or error. 
-    // Ideally we should handle this. For now logging.
-    let defaultRoleId = null;
-    if (roleData) defaultRoleId = roleData.role_id;
-    else console.warn("Default 'Employee' role not found in DB.");
+    if (roleError || !roleData) {
+       console.warn("Default role not found. Ensure DB is seeded.");
+       // Fallback or error
+       return res.status(500).json({ error: "Database not properly seeded. Missing roles." });
+    }
 
     // 4. Insert Employee
     const { data: newEmp, error: insertError } = await supabase
       .from('employees')
       .insert([
         {
-          empid,
+          employee_id,
           name,
           email,
           password,
-          role_id: defaultRoleId,
-          // cluster_id is null initially
+          role_id: roleData.id,
+          availability: 'Available'
         }
       ])
       .select()
@@ -130,15 +143,11 @@ export const signupUser = async (req, res) => {
 
     if (insertError) throw insertError;
 
-    // 5. Initialize Availability (Default to 'Available' or 'Busy'?)
-    // User schema has availability table.
-    // Let's create a default availability entry.
+    // 5. Initialize Availability Details
     if (newEmp) {
-      await supabase.from('availability').insert([{
+      await supabase.from('availability_details').insert([{
         employee_id: newEmp.employee_id,
-        status: 'Available', // Default
-        hours_available: 8 // Default
-        // from_date/to_date null
+        availability: 'Available'
       }]);
     }
 
@@ -153,28 +162,26 @@ export const signupUser = async (req, res) => {
 // UPDATE PASSWORD
 // ---------------------------
 export const updatePassword = async (req, res) => {
-  const { empid, currentPassword, newPassword } = req.body;
+  const { employee_id, currentPassword, newPassword } = req.body;
 
-  if (!empid || !currentPassword || !newPassword) {
+  if (!employee_id || !currentPassword || !newPassword) {
     return res.status(400).json({ error: "All fields are required" });
   }
 
   try {
     // 1. Fetch current user to verify password
-    const { data: users, error: fetchError } = await supabase
+    const { data: user, error: fetchError } = await supabase
       .from('employees')
       .select('password')
-      .eq('empid', empid)
+      .eq('employee_id', employee_id)
       .single();
 
-    if (fetchError || !users) {
+    if (fetchError || !user) {
       return res.status(404).json({ error: "User not found" });
     }
 
     // 2. Verify current password
-    console.log(`[UpdatePassword] Verifying: DB=${users.password} vs Input=${currentPassword}`);
-    if (users.password !== currentPassword) {
-      console.log("[UpdatePassword] Password mismatch!");
+    if (user.password !== currentPassword) {
       return res.status(401).json({ error: "Incorrect current password" });
     }
 
@@ -182,12 +189,12 @@ export const updatePassword = async (req, res) => {
     const { error: updateError } = await supabase
       .from('employees')
       .update({ password: newPassword })
-      .eq('empid', empid);
+      .eq('employee_id', employee_id);
 
     if (updateError) throw updateError;
 
     // Send Notification
-    sendNotificationToUser(empid, {
+    sendNotificationToUser(employee_id, {
       title: "Password Changed",
       message: "Your password has been successfully updated.",
       url: "/profile"

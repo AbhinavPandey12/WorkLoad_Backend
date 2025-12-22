@@ -5,9 +5,9 @@ const router = express.Router();
 
 router.get('/dashboard-metrics', getDashboardMetrics);
 router.get('/', getAllEmployees);
-router.get('/:empid', getEmployeeById);
-router.put('/:empid', updateEmployee);
-router.patch('/:empid', updateEmployee);
-router.patch('/:empid/stars', updateEmployeeStars);
+router.get('/:employee_id', getEmployeeById);
+router.put('/:employee_id', updateEmployee);
+router.patch('/:employee_id', updateEmployee);
+router.patch('/:employee_id/stars', updateEmployeeStars);
 
 export default router; // ✅ ES Module export
