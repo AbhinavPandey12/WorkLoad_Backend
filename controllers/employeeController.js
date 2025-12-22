@@ -90,24 +90,66 @@ const transformEmployee = (emp) => {
 export const getAllEmployees = async (req, res) => {
   const { search = "", availability = "" } = req.query;
   try {
+    // 1. Fetch basic info, roles, and availability
     const { data: employees, error } = await supabase
       .from('employees')
       .select(`
         *,
         roles ( role_name, role_type ),
-        employee_clusters ( clusters ( cluster_name ) ),
-        employee_skills ( skills ( skill_name ) ),
-        project_members ( member_role, projects ( project_name ) ),
-        availability_details ( availability, hours_available, from_date, to_date ),
-        employee_stars ( stars, created_at ),
-        employee_working_days ( working_days ( day_name ) )
+        availability_details ( availability, hours_available, from_date, to_date )
       `)
-      .order('employee_id', { ascending: true })
-      .order('created_at', { foreignTable: 'employee_stars', ascending: false });
+      .order('employee_id', { ascending: true });
 
     if (error) throw error;
+    if (!employees) return res.json([]);
 
-    let result = (employees || []).map(transformEmployee);
+    const empIds = employees.map(e => e.employee_id);
+
+    // 2. Batch fetch clusters
+    const { data: ecData } = await supabase
+      .from('employee_clusters')
+      .select('employee_id, clusters(cluster_name)')
+      .in('employee_id', empIds);
+    
+    // 3. Batch fetch skills
+    const { data: esData } = await supabase
+      .from('employee_skills')
+      .select('employee_id, skills(skill_name)')
+      .in('employee_id', empIds);
+
+    // 4. Batch fetch stars (latest)
+    const { data: starsData } = await supabase
+      .from('employee_stars')
+      .select('employee_id, stars, created_at')
+      .in('employee_id', empIds)
+      .order('created_at', { ascending: false });
+
+    // 5. Batch fetch working days
+    const { data: ewdData } = await supabase
+      .from('employee_working_days')
+      .select('employee_id, working_days(day_name)')
+      .in('employee_id', empIds);
+
+    // 6. Batch fetch project memberships
+    const { data: pmData } = await supabase
+      .from('project_members')
+      .select('employee_id, member_role, projects(project_name)')
+      .in('employee_id', empIds);
+
+    // Manually merge data
+    const enriched = employees.map(emp => {
+      const id = emp.employee_id;
+      return {
+        ...emp,
+        employee_clusters: ecData?.filter(x => x.employee_id === id) || [],
+        employee_skills: esData?.filter(x => x.employee_id === id) || [],
+        employee_stars: starsData?.filter(x => x.employee_id === id) || [],
+        employee_working_days: ewdData?.filter(x => x.employee_id === id) || [],
+        project_members: pmData?.filter(x => x.employee_id === id) || []
+      };
+    });
+
+    let result = enriched.map(transformEmployee);
 
     if (search || availability) {
        result = result.filter(emp => {
@@ -125,7 +167,7 @@ export const getAllEmployees = async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error("Fetch employees error →", err);
-    res.status(500).json({ error: "Supabase fetch error" });
+    res.status(500).json({ error: "Supabase fetch error", details: err.message });
   }
 };
 
@@ -133,29 +175,42 @@ export const getAllEmployees = async (req, res) => {
 export const getEmployeeById = async (req, res) => {
   const { employee_id } = req.params;
   try {
-    const { data, error } = await supabase
+    const { data: emp, error } = await supabase
       .from('employees')
       .select(`
         *,
         roles ( role_name, role_type ),
-        employee_clusters ( clusters ( cluster_name ) ),
-        employee_skills ( skills ( skill_name ) ),
-        project_members ( member_role, projects ( project_name ) ),
-        availability_details ( availability, hours_available, from_date, to_date ),
-        employee_stars ( stars, created_at ),
-        employee_working_days ( working_days ( day_name ) )
+        availability_details ( availability, hours_available, from_date, to_date )
       `)
       .eq('employee_id', employee_id)
-      .order('created_at', { foreignTable: 'employee_stars', ascending: false });
+      .single();
 
-    if (error) throw error;
+    if (error || !emp) throw error || new Error("Employee not found");
 
-    if (!data || data.length === 0) return res.status(404).json({ error: "Employee not found" });
-    
-    res.json(transformEmployee(data[0]));
+    // Fetch related data
+    const id = emp.employee_id;
+    const [ec, es, stars, ewd, pm] = await Promise.all([
+      supabase.from('employee_clusters').select('clusters(cluster_name)').eq('employee_id', id),
+      supabase.from('employee_skills').select('skills(skill_name)').eq('employee_id', id),
+      supabase.from('employee_stars').select('stars, created_at').eq('employee_id', id).order('created_at', { ascending: false }),
+      supabase.from('employee_working_days').select('working_days(day_name)').eq('employee_id', id),
+      supabase.from('project_members').select('member_role, projects(project_name)').eq('employee_id', id)
+    ]);
+
+    const enriched = {
+      ...emp,
+      employee_clusters: ec.data || [],
+      employee_skills: es.data || [],
+      employee_stars: stars.data || [],
+      employee_working_days: ewd.data || [],
+      project_members: pm.data || []
+    };
+
+    res.json(transformEmployee(enriched));
+
   } catch (err) {
-    console.error("Fetch employee error →", err);
-    res.status(500).json({ error: "Supabase fetch error" });
+    console.error(`Fetch employee error →`, err);
+    res.status(500).json({ error: "Supabase fetch error", details: err.message });
   }
 };
 

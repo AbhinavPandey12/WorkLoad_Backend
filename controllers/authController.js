@@ -14,19 +14,18 @@ export const loginUser = async (req, res) => {
     return res.status(400).json({ error: "Email and password required" });
 
   try {
-    // JOIN roles and clusters (via employee_clusters)
-    const { data: users, error } = await supabase
+    // 1. Fetch user and role
+    const { data: users, error: userError } = await supabase
       .from('employees')
       .select(`
         *,
-        roles ( role_name, role_type ),
-        employee_clusters ( clusters ( cluster_name ) )
+        roles ( role_name, role_type )
       `)
       .eq('email', email);
-
-    if (error) {
-      console.error("Supabase Query Error during Login:", error);
-      throw error;
+    
+    if (userError) {
+      console.error("Supabase User Query Error:", userError);
+      throw userError;
     }
 
     if (!users || users.length === 0)
@@ -37,12 +36,29 @@ export const loginUser = async (req, res) => {
     if (user.password !== password)
       return res.status(401).json({ error: "Invalid credentials" });
 
+    // 2. Fetch clusters separately to avoid complex join issues
+    let clusters = [];
+    try {
+      const { data: ecData, error: ecError } = await supabase
+        .from('employee_clusters')
+        .select(`
+          cluster_id,
+          clusters ( cluster_name )
+        `)
+        .eq('employee_id', user.employee_id);
+      
+      if (!ecError && ecData) {
+        clusters = ecData.map(ec => ec.clusters?.cluster_name).filter(Boolean);
+      } else if (ecError) {
+        console.warn("Cluster fetch warning (skipping clusters):", ecError.message);
+      }
+    } catch (cErr) {
+      console.warn("Cluster fetch error (skipping clusters):", cErr.message);
+    }
+
     // Flatten structure for frontend compatibility
     const roleName = user.roles ? user.roles.role_name : "Employee";
     const roleType = user.roles ? user.roles.role_type : "IC";
-    
-    // Multiple clusters
-    const clusters = user.employee_clusters ? user.employee_clusters.map(ec => ec.clusters?.cluster_name).filter(Boolean) : [];
 
     const safeUser = {
       employee_id: user.employee_id, // Integer PK
