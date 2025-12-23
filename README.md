@@ -34,6 +34,7 @@ The WorkLoad Backend serves as the robust foundation for the Employee Availabili
   - `axios` for external API requests
   - `web-push` for VAPID Push Notification integration
   - `node-cron` for scheduled tasks (e.g., 15-day compliance check)
+- **Deployment:** [Vercel](https://vercel.com/)
 
 ## ✨ Supported Business Logic
 
