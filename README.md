@@ -10,6 +10,7 @@ The WorkLoad Backend serves as the robust foundation for the Employee Availabili
 
 ![Supabase Schema](./public/pics/Supabase_schema.png)
 - **Schema**: Fully normalized relational schema comprising tables for:
+
   - `employees`: Core user data and credentials.
   - `roles`: RBAC definitions (`role_name`, `role_type`).
   - `clusters`: Organisational clusters.
