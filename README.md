@@ -18,7 +18,7 @@ The WorkLoad Backend serves as the robust foundation for the Employee Availabili
   - `availability_details`: Detailed tracking of employee availability (hours, dates).
   - `working_days`: Reference table for days of the week.
   - **Junction Tables**: `employee_skills`, `employee_clusters`, `employee_working_days`, `project_members`.
-  - **Gamification**: `employee_stars` (tracking performance ratings).
+  - **Performance Tracking**: `employee_stars` (tracking performance ratings).
   - **Notifications**: `push_notifications` (storing VAPID subscriptions).
 
 ## 🚀 Tech Stack
