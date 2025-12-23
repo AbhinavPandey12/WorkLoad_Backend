@@ -202,6 +202,12 @@ export const deleteProject = async (req, res) => {
     try {
         const { id } = req.params;
         
+        // Validate UUID
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (!id || !uuidRegex.test(id)) {
+            return res.status(400).json({ error: "Invalid Project ID Format" });
+        }
+
         // Cascading deletes should be handled by DB constraints (project_members, project_required_skills)
         const { error } = await supabase
             .from('projects')

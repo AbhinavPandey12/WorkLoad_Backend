@@ -1,4 +1,4 @@
-import supabase from "../db/supabaseClient.js";
+import supabase, { supabaseAdmin } from "../db/supabaseClient.js";
 import { sendNotificationToUser } from "./notificationController.js";
 
 /**
@@ -89,9 +89,11 @@ const transformEmployee = (emp) => {
 // GET ALL
 export const getAllEmployees = async (req, res) => {
   const { search = "", availability = "" } = req.query;
+  const client = supabaseAdmin || supabase;
+  
   try {
     // 1. Fetch basic info, roles, and availability
-    const { data: employees, error } = await supabase
+    const { data: employees, error } = await client
       .from('employees')
       .select(`
         *,
@@ -106,32 +108,32 @@ export const getAllEmployees = async (req, res) => {
     const empIds = employees.map(e => e.employee_id);
 
     // 2. Batch fetch clusters
-    const { data: ecData } = await supabase
+    const { data: ecData } = await client
       .from('employee_clusters')
       .select('employee_id, clusters(cluster_name)')
       .in('employee_id', empIds);
     
     // 3. Batch fetch skills
-    const { data: esData } = await supabase
+    const { data: esData } = await client
       .from('employee_skills')
       .select('employee_id, skills(skill_name)')
       .in('employee_id', empIds);
 
     // 4. Batch fetch stars (latest)
-    const { data: starsData } = await supabase
+    const { data: starsData } = await client
       .from('employee_stars')
       .select('employee_id, stars, created_at')
       .in('employee_id', empIds)
       .order('created_at', { ascending: false });
 
     // 5. Batch fetch working days
-    const { data: ewdData } = await supabase
+    const { data: ewdData } = await client
       .from('employee_working_days')
       .select('employee_id, working_days(day_name)')
       .in('employee_id', empIds);
 
     // 6. Batch fetch project memberships
-    const { data: pmData } = await supabase
+    const { data: pmData } = await client
       .from('project_members')
       .select('employee_id, member_role, projects(project_name)')
       .in('employee_id', empIds);
@@ -373,12 +375,19 @@ export const updateEmployeeStars = async (req, res) => {
 // GET DASHBOARD METRICS
 export const getDashboardMetrics = async (req, res) => {
   try {
-    // 1. Fetch employees
-    const { data: employees, error } = await supabase
+    const { range = 'All' } = req.query;
+
+    // 1. Fetch employees (Use Admin Client if available to bypass RLS for aggregate stats)
+    const client = supabaseAdmin || supabase;
+    
+    // Check if client is null (if key not in env and admin var is null)
+    if (!client) throw new Error("Supabase client not initialized");
+
+    const { data: employees, error } = await client
       .from('employees')
       .select(`
         *,
-        availability_details ( availability, hours_available )
+        availability_details ( availability, hours_available, from_date, to_date )
       `);
 
     if (error) throw error;
@@ -388,10 +397,10 @@ export const getDashboardMetrics = async (req, res) => {
 
     // 2. Fetch Roles
     const roleIds = [...new Set(employees.map(e => e.role_id).filter(Boolean))];
-    const { data: allRoles } = await supabase.from('roles').select('id, role_name').in('id', roleIds);
+    const { data: allRoles } = await client.from('roles').select('id, role_name, role_type').in('id', roleIds);
 
     // 3. Fetch Clusters
-    const { data: allClusters } = await supabase
+    const { data: allClusters } = await client
        .from('employee_clusters')
        .select('employee_id, clusters(cluster_name)')
        .in('employee_id', empIds);
@@ -407,19 +416,88 @@ export const getDashboardMetrics = async (req, res) => {
        };
     });
     
-    // Use enrichedEmps below instead of employees
     const empsToProcess = enrichedEmps;
 
-    if (error) throw error;
+    // 4. Fetch Projects for Stats
+    const { data: allProjects } = await client
+       .from('projects')
+       .select('status');
+
+    let openProjects = 0;
+    let ongoingProjects = 0;
+    
+    if (allProjects) {
+        allProjects.forEach(p => {
+             const s = (p.status || "").trim().toLowerCase();
+             if (s === 'open') openProjects++;
+             if (s === 'ongoing') ongoingProjects++;
+        });
+    }
 
     const metrics = {
       partialHoursDistribution: {},
       clusters: { "MEBM": 0, "M&T": 0, "S&PS Insitu": 0, "S&PS Exsitu": 0 },
       roles: {},
+      totalPeople: 0,
+      openProjectsCount: openProjects,
+      ongoingProjectsCount: ongoingProjects,
       totalPartialHours: 0,
       totalAvailableHours: 0,
       partialEmployeeCount: 0,
-      availableEmployeeCount: 0
+      availableEmployeeCount: 0,
+      occupiedEmployeeCount: 0
+    };
+
+    // --- Date Logic ---
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let calcStart = new Date(today);
+    let calcEnd = null;
+
+    if (range === 'Daily') {
+        calcEnd = new Date(today);
+        calcEnd.setHours(23, 59, 59, 999);
+    } else if (range === 'Weekly') {
+        // End of current week (Sunday)
+        const day = today.getDay(); // 0 is Sun
+        const diff = 7 - day; // Days remaining till next Sunday (if today is Sun, diff=7? No, today.getDate() + (7-day))
+        // Actually, if today is Sunday (0), end is today. If today is Mon(1), end is +6.
+        // Let's standardise: Week ends on SUNDAY.
+        // If today is Sunday(0), we want today.
+        const d = new Date(today);
+        d.setDate(today.getDate() + (day === 0 ? 0 : 7 - day)); 
+        d.setHours(23, 59, 59, 999);
+        calcEnd = d;
+    } else if (range === 'Monthly') {
+        // Last day of current month
+        const d = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+        d.setHours(23, 59, 59, 999);
+        calcEnd = d;
+    } else {
+        // 'All' or others: Default to just today's snapshot x 1 day? 
+        // Or specific requirements? 
+        // User didn't specify 'All', but logic implies 'All' usually shows total capacity/snapshot.
+        // We'll treat 'All' as a single day snapshot for consistency with previous logic, 
+        // OR distinct logic. Let's make 'All' behave like 'Daily' but maybe we don't multiply by duration? 
+        // Existing logic was just summing hours.
+        // Lets treat 'All' as 'Daily' (Snapshot) effectively.
+        calcEnd = new Date(today);
+        calcEnd.setHours(23, 59, 59, 999);
+    }
+
+    const countWorkingDays = (d1, d2) => {
+        if (d2 < d1) return 0;
+        let count = 0;
+        let current = new Date(d1);
+        while (current <= d2) {
+            const day = current.getDay();
+            if (day !== 0 && day !== 6) { // Not Sun(0) or Sat(6)
+                count++;
+            }
+            current.setDate(current.getDate() + 1);
+        }
+        return count;
     };
 
     empsToProcess.forEach(emp => {
@@ -432,20 +510,68 @@ export const getDashboardMetrics = async (req, res) => {
          else if (c) metrics.clusters[c] = (metrics.clusters[c] || 0) + 1;
        });
 
-       const avail = emp.availability;
-       if (avail === 'Partially Available') {
+       // EXCLUDE MANAGERS
+       const roleName = (r || "").trim().toLowerCase();
+       const roleType = (emp.roles?.role_type || "").trim().toLowerCase();
+
+       if (roleName === 'manager' || roleType === 'manager') return;
+
+       const availRaw = emp.availability || "";
+       const avail = availRaw.trim().toLowerCase();
+
+       if (avail === 'partially available') {
+          metrics.partialEmployeeCount++;
+          
           const det = emp.availability_details?.[0];
-          if (det && det.hours_available) {
-             const label = String(det.hours_available);
-             metrics.partialHoursDistribution[label] = (metrics.partialHoursDistribution[label] || 0) + 1;
-             metrics.totalPartialHours += det.hours_available;
-             metrics.partialEmployeeCount++;
+          // Determine generic hours if missing
+          const dailyHours = (det && det.hours_available) ? det.hours_available : 0; 
+          
+          // Calculate valid intersection
+          // Emp Range: from_date -> to_date
+          // Filter Range: calcStart -> calcEnd
+          let eStart = (det && det.from_date) ? new Date(det.from_date) : new Date(today); // Default to today if missing
+          let eEnd = (det && det.to_date) ? new Date(det.to_date) : new Date(calcEnd); // Default to end of range if missing
+
+          // Standardize
+          if(eStart < today) eStart = new Date(today);
+          
+          // Intersection
+          const start = eStart > calcStart ? eStart : calcStart;
+          const end = eEnd < calcEnd ? eEnd : calcEnd;
+
+          const days = countWorkingDays(start, end);
+          
+          if(dailyHours > 0 && days > 0) {
+              const label = String(dailyHours);
+              metrics.partialHoursDistribution[label] = (metrics.partialHoursDistribution[label] || 0) + 1;
+              metrics.totalPartialHours += (days * dailyHours);
           }
-       } else if (avail === 'Available') {
-          metrics.totalAvailableHours += 8;
+
+       } else if (avail === 'available') {
           metrics.availableEmployeeCount++;
+          const det = emp.availability_details?.[0];
+
+          // Same logic for Available? Usually "Available" implies 8h/day unless details say otherwise
+          // Usually "Available" doesn't have from/to dates in this system (implied indefinite).
+          // But if they DO have dates, respect them.
+          
+          let eStart = (det && det.from_date) ? new Date(det.from_date) : new Date(today);
+          let eEnd = (det && det.to_date) ? new Date(det.to_date) : new Date(calcEnd); // Indefinite -> till end of range
+
+          if(eStart < today) eStart = new Date(today);
+
+          const start = eStart > calcStart ? eStart : calcStart;
+          const end = eEnd < calcEnd ? eEnd : calcEnd;
+
+          const days = countWorkingDays(start, end);
+          metrics.totalAvailableHours += (days * 8);
+
+       } else {
+          metrics.occupiedEmployeeCount++;
        }
     });
+
+    metrics.totalPeople = metrics.availableEmployeeCount + metrics.partialEmployeeCount + metrics.occupiedEmployeeCount;
 
     res.json(metrics);
   } catch (err) {

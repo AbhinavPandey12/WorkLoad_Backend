@@ -13,11 +13,13 @@ The WorkLoad Backend serves as the robust foundation for the Employee Availabili
   - `employees`: Core user data and credentials.
   - `roles`: RBAC definitions (`role_name`, `role_type`).
   - `clusters`: Organisational clusters.
-  - `skills` & `employee_skills`: Many-to-many skill mapping.
-  - `interests` & `employee_interests`: Many-to-many interest mapping.
-  - `projects` & `employee_projects`: Project history tracking.
-  - `availability`: Historical availability logs.
-  - `working_days`: Reference table for schedule calculations.
+  - `skills`: Skill master list.
+  - `projects`: Project details and status.
+  - `availability_details`: Detailed tracking of employee availability (hours, dates).
+  - `working_days`: Reference table for days of the week.
+  - **Junction Tables**: `employee_skills`, `employee_clusters`, `employee_working_days`, `project_members`.
+  - **Gamification**: `employee_stars` (tracking performance ratings).
+  - **Notifications**: `push_notifications` (storing VAPID subscriptions).
 
 ## 🚀 Tech Stack
 
