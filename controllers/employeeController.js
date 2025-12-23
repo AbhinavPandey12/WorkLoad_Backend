@@ -501,7 +501,12 @@ export const getDashboardMetrics = async (req, res) => {
     };
 
     empsToProcess.forEach(emp => {
-       const r = emp.roles?.role_name;
+       let r = emp.roles?.role_name;
+       
+       // Terminology Updates
+       if (r === 'Head of Bluebird') r = 'Organization Head';
+       if (r === 'Mission Leader' || r === 'Leader') r = 'Project Leader';
+
        if (r) metrics.roles[r] = (metrics.roles[r] || 0) + 1;
        
        const clusters = emp.employee_clusters?.map(ec => ec.clusters?.cluster_name) || [];
