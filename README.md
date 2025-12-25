@@ -42,7 +42,7 @@ The WorkLoad Backend serves as the robust foundation for the Employee Availabili
 - **Compliance Enforcement:** Middleware checks the `updated_at` timestamp. A scheduled cron job runs daily to identify employees who haven't updated their details in 15 days, sending them a push notification reminder.
 - **Role-Based Access Control (RBAC):**
   - **Managers:** Full access to view all employee availability data, create global "Inline Activities", and modify performance "Star" ratings.
-    - **Username:** `manager@workload.com`
+    - **Username:** `manager@workload.com/manager2@workload.com`
     - **Password:** `manager`
   - **Employees:** Read-only access to Manager-created activities; write access is strictly limited to their own personal availability and status.
     - **Username:** `employee@workload.com`
@@ -100,3 +100,6 @@ workload_backend/
 ## 📜 Scripts
 
 - `npm start`: Runs the application using `node index.js`.
+
+> [!NOTE]
+> Reset Password is currently disabled to ensure uninterrupted access for all users.
