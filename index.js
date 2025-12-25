@@ -13,10 +13,18 @@ const app = express();
 // Middleware
 // -----------------------------
 app.use(cors({
-    origin: [
-        'https://work-load-frontend.vercel.app',
-        'https://work-load-backend.vercel.app',
-    ],
+    origin: (origin, callback) => {
+        // Allow local development
+        if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1')) {
+            return callback(null, true);
+        }
+        // Allow any Vercel deployment
+        if (origin.endsWith('.vercel.app')) {
+            return callback(null, true);
+        }
+        // Specific allowing if needed, but the above covers most cases
+        callback(new Error('Not allowed by CORS'));
+    },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     credentials: true
 }));
@@ -64,22 +72,7 @@ app.listen(PORT, () =>
 import startScheduler from './utils/scheduler.js';
 startScheduler();
 
-// TEST ROUTE TO CHECK SHEETDB CONNECTION
-app.get("/test-db", async (req, res) => {
-    try {
-        const response = await sheetDB.get("/");
-        res.json({
-            success: true,
-            rows: response.data.length,
-            sample: response.data[0]
-        });
-    } catch (err) {
-        console.error("DB Test Error →", err.message);
-        res.status(500).json({
-            success: false,
-            error: err.message
-        });
-    }
-});
+// Health Check
+app.get("/health", (req, res) => res.json({ status: "ok" }));
 
 export default app;
