@@ -2,7 +2,7 @@
 
 # WorkLoad - Backend
 
-The WorkLoad Backend serves as the robust foundation for the Employee Availability Management system. Built with Node.js and Express, it handles secure authentication, complex data management via a **Normalized Database using Supabase**, and orchestrates real-time notifications, ensuring seamless data flow for the frontend application.
+The WorkLoad Backend serves as the robust foundation for the Employee Availability Management system. The app is installable as a Progressive Web app and have push notifications (node web push). Built with Node.js and Express, it handles secure authentication, complex data management via a **Normalized Database using Supabase**, and orchestrates real-time notifications, ensuring seamless data flow for the frontend application.
 
 ## 🗄️ Database & Technology
 - **Database**: [Supabase (PostgreSQL)](https://supabase.com/)
