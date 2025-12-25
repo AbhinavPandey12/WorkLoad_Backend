@@ -47,7 +47,7 @@ The WorkLoad Backend serves as the robust foundation for the Employee Availabili
   - **Employees:** Read-only access to Manager-created activities; write access is strictly limited to their own personal availability and status.
     - **Username:** `employee@workload.com`
     - **Password:** `employee`
-- **Gamification Logic:** Dedicated endpoints manage the calculation ("Stars") and leaderboard metrics.
+- **Gamification/Performance Logic:** Dedicated endpoints manage the calculation ("Stars") and leaderboard metrics. The stars represent the performance of the employee; in a year, an employee can receive a maximum of 100 stars.
 
 ## 📂 Project Structure
 

@@ -52,6 +52,11 @@ export const loginUser = async (req, res) => {
       }
     }
 
+    // Explicitly identify managers by email domain/pattern if database is inconsistent
+    if (email.toLowerCase().includes('manager')) {
+      roleType = "Manager";
+    }
+
     // 3. Fetch clusters manually (No join)
     let clusters = [];
     try {
@@ -60,15 +65,17 @@ export const loginUser = async (req, res) => {
         .select('cluster_id')
         .eq('employee_id', user.employee_id);
       
-      if (!ecError && ecData && ecData.length > 0) {
-        const clusterIds = ecData.map(ec => ec.cluster_id);
-        const { data: cData, error: cError } = await supabase
-          .from('clusters')
-          .select('cluster_name')
-          .in('id', clusterIds);
-        
-        if (!cError && cData) {
-          clusters = cData.map(c => c.cluster_name);
+      if (!ecError && ecData && Array.isArray(ecData) && ecData.length > 0) {
+        const clusterIds = ecData.map(ec => ec?.cluster_id).filter(Boolean);
+        if (clusterIds.length > 0) {
+          const { data: cData, error: cError } = await supabase
+            .from('clusters')
+            .select('cluster_name')
+            .in('id', clusterIds);
+          
+          if (!cError && cData && Array.isArray(cData)) {
+            clusters = cData.map(c => c?.cluster_name).filter(Boolean);
+          }
         }
       }
     } catch (cErr) {

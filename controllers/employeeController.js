@@ -37,41 +37,60 @@ const getOrInsertProjectId = async (projectName) => {
 
 // Data Transformer: DB Normalized -> Frontend JSON
 const transformEmployee = (emp) => {
+  if (!emp) return null;
+
   // Clusters
-  const clusters = emp.employee_clusters ? emp.employee_clusters.map(ec => ec.clusters?.cluster_name).filter(Boolean) : [];
+  const clusters = Array.isArray(emp.employee_clusters) 
+    ? emp.employee_clusters.map(ec => ec?.clusters?.cluster_name).filter(Boolean) 
+    : [];
   
-  // Skills (Technical Interests are now Skills)
-  const skills = emp.employee_skills ? emp.employee_skills.map(es => es.skills?.skill_name).filter(Boolean) : [];
+  // Skills & Interests
+  const allSkills = Array.isArray(emp.employee_skills) 
+    ? emp.employee_skills.map(es => es?.skills?.skill_name).filter(Boolean) 
+    : [];
+  
+  const skills = allSkills.filter(s => !s.startsWith("Interest: ") && !s.startsWith("Previous Project: "));
+  const interests = allSkills.filter(s => s.startsWith("Interest: ")).map(s => s.replace("Interest: ", ""));
   
   // Availability Details
-  const avail = emp.availability_details?.[0] || {};
+  const avail = (Array.isArray(emp.availability_details) && emp.availability_details.length > 0) 
+    ? emp.availability_details[0] 
+    : {};
 
-  // Projects - Current from project_members or projects joined
-  // Note: projects.manager_id is also a thing.
-  // We'll simplify for frontend: return projects where member_role is 'Employee' or POC
-  const projectMemberships = emp.project_members || [];
-  const currentProject = projectMemberships.length > 0 ? projectMemberships[0].projects?.project_name : "";
+  // Projects
+  const projectMemberships = Array.isArray(emp.project_members) ? emp.project_members : [];
+  const pmEntry = projectMemberships.find(pm => (pm.member_role || "").toLowerCase() !== 'previous');
+  let currentProject = "";
+  if (pmEntry?.projects) {
+    currentProject = Array.isArray(pmEntry.projects) 
+      ? (pmEntry.projects[0]?.project_name || "")
+      : (pmEntry.projects.project_name || "");
+  }
+  const previous_projects = allSkills.filter(s => {
+    const ls = s.toLowerCase().trim();
+    return ls.startsWith("previous project:");
+  }).map(s => s.slice(s.indexOf(":") + 1).trim());
 
   return {
     employee_id: emp.employee_id,
-    name: emp.name,
-    email: emp.email,
+    name: emp.name || "Unknown",
+    email: emp.email || "",
     role: emp.roles?.role_name || "Software Developer",
-    role_type: emp.roles?.role_type || "IC", 
+    role_type: (emp.email && typeof emp.email === 'string' && emp.email.toLowerCase().includes('manager')) ? "Manager" : (emp.roles?.role_type || "IC"), 
     clusters: clusters,
-    cluster: clusters[0] || "", // legacy support
-    cluster2: clusters[1] || "", // legacy support
+    cluster: clusters[0] || "",
+    cluster2: clusters[1] || "",
     
-    // Stars: latest from employee_stars table
-    stars: emp.employee_stars?.length > 0 ? emp.employee_stars[0].stars : 0, 
+    stars: (Array.isArray(emp.employee_stars) && emp.employee_stars.length > 0) ? emp.employee_stars[0].stars : 0, 
     
-    // Working Days
-    working_days: emp.employee_working_days ? emp.employee_working_days.map(ewd => ewd.working_days?.day_name).filter(Boolean) : [],
+    working_days: Array.isArray(emp.employee_working_days) 
+      ? emp.employee_working_days.map(ewd => ewd?.working_days?.day_name).filter(Boolean) 
+      : [],
     
     current_skills: skills,
-    interests: [], // Deprecated
+    interests: interests, 
     current_project: currentProject,
-    previous_projects: [], // Would need history table
+    previous_projects: previous_projects,
     
     availability: emp.availability || "Occupied",
     hours_available: avail.hours_available || null,
@@ -105,7 +124,7 @@ export const getAllEmployees = async (req, res) => {
     if (error) throw error;
     if (!employees) return res.json([]);
 
-    const empIds = employees.map(e => e.employee_id);
+    const empIds = employees.filter(e => e && e.employee_id).map(e => e.employee_id);
 
     // 2. Batch fetch clusters
     const { data: ecData } = await client
@@ -151,7 +170,7 @@ export const getAllEmployees = async (req, res) => {
       };
     });
 
-    let result = enriched.map(transformEmployee);
+    let result = enriched.map(transformEmployee).filter(Boolean);
 
     if (search || availability) {
        result = result.filter(emp => {
@@ -246,6 +265,25 @@ export const updateEmployee = async (req, res) => {
       await supabase.from('employees').update(updates).eq('employee_id', employee_id);
     }
 
+    // 2.5 Update Projects (via project_members)
+    if (body.current_project !== undefined) {
+        // Clear existing memberships (current only) - Actually clear all if we want to be safe, 
+        // but now we only store current project in project_members
+        await supabase.from('project_members').delete().eq('employee_id', employee_id);
+        
+        // Current Project
+        if (body.current_project && body.current_project.trim()) {
+            const pid = await getOrInsertProjectId(body.current_project.trim());
+            if (pid) {
+                await supabase.from('project_members').insert([{
+                    project_id: pid,
+                    employee_id: employee_id,
+                    member_role: 'Employee' 
+                }]);
+            }
+        }
+    }
+
     // 3. Update Clusters (Many-to-Many, Max 2)
     if (body.clusters !== undefined || body.cluster || body.cluster2) {
       const clusterNames = Array.isArray(body.clusters) ? body.clusters : [body.cluster, body.cluster2].filter(Boolean);
@@ -260,13 +298,22 @@ export const updateEmployee = async (req, res) => {
       }
     }
 
-    // 4. Update Skills
-    if (body.current_skills !== undefined) {
+    // 4. Update Skills, Interests & Previous Projects
+    if (body.current_skills !== undefined || body.interests !== undefined || body.previous_projects !== undefined) {
       const skillsArr = Array.isArray(body.current_skills) ? body.current_skills : [];
+      const interestsArr = Array.isArray(body.interests) ? body.interests : [];
+      const prevProjArr = Array.isArray(body.previous_projects) ? body.previous_projects : [];
+      
+      // Combine with interests and previous projects having prefixes
+      const combined = [
+        ...skillsArr.map(s => s.trim()),
+        ...interestsArr.map(i => `Interest: ${i.trim()}`),
+        ...prevProjArr.map(p => `Previous Project: ${p.trim()}`)
+      ].filter(Boolean);
+
       await supabase.from('employee_skills').delete().eq('employee_id', employee_id);
-      for (const skill of skillsArr) {
-         if(!skill) continue;
-         const skill_id = await getOrInsertSkillId(skill.trim());
+      for (const skillItem of combined) {
+         const skill_id = await getOrInsertSkillId(skillItem);
          if (skill_id) {
            await supabase.from('employee_skills').insert([{ employee_id, skill_id }]);
          }
@@ -406,15 +453,16 @@ export const getDashboardMetrics = async (req, res) => {
        .in('employee_id', empIds);
 
     // Merge in memory
-    const enrichedEmps = employees.map(emp => {
+    const enrichedEmps = (employees || []).map(emp => {
+       if (!emp) return null;
        const role = allRoles?.find(r => r.id === emp.role_id);
-       const clusters = allClusters?.filter(c => c.employee_id === emp.employee_id);
+       const clusters = allClusters?.filter(c => c && c.employee_id === emp.employee_id);
        return {
           ...emp,
           roles: role,
           employee_clusters: clusters
        };
-    });
+    }).filter(Boolean);
     
     const empsToProcess = enrichedEmps;
 
@@ -519,7 +567,7 @@ export const getDashboardMetrics = async (req, res) => {
        const roleName = (r || "").trim().toLowerCase();
        const roleType = (emp.roles?.role_type || "").trim().toLowerCase();
 
-       if (roleName === 'manager' || roleType === 'manager') return;
+       if (roleName === 'manager' || roleType === 'manager' || (emp.email && emp.email.toLowerCase().includes('manager'))) return;
 
        const availRaw = emp.availability || "";
        const avail = availRaw.trim().toLowerCase();

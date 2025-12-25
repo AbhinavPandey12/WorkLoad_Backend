@@ -81,7 +81,7 @@ export const sendNotificationToUser = async (employee_id, payload) => {
         if (error || !subs || subs.length === 0) return;
 
         // 2. Send to all subscriptions
-        const notifications = subs.map(subRecord => {
+        const notifications = (subs || []).filter(Boolean).map(subRecord => {
             const pushSubscription = {
                 endpoint: subRecord.endpoint,
                 keys: {
